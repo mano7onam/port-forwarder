@@ -129,36 +129,70 @@ struct Client {
     }
 };
 
-int server_socket;
+int my_socket;
 std::vector<Client*> clients;
 
-void init_server_socket(unsigned short server_port) {
-    server_socket = socket(PF_INET, SOCK_STREAM, 0);
-    if (-1 == server_socket) {
+void init_server_socket(unsigned short my_port) {
+    my_socket = socket(PF_INET, SOCK_STREAM, 0);
+    if (-1 == my_socket) {
         perror("Error while creating serverSocket");
         exit(EXIT_FAILURE);
     }
 
-    struct sockaddr_in server_address;
-    server_address.sin_family = PF_INET;
-    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_address.sin_port = htons(server_port);
+    struct sockaddr_in my_address;
+    my_address.sin_family = PF_INET;
+    my_address.sin_addr.s_addr = htonl(INADDR_ANY);
+    my_address.sin_port = htons(my_port);
 
-    if (-1 == (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)))) {
+    fprintf(stderr, "%d\n", my_port);
+    if (-1 == (bind(my_socket, (struct sockaddr *)&my_address, sizeof(my_address)))) {
         perror("Error while binding");
         exit(EXIT_FAILURE);
     }
 
-    if (-1 == listen(server_socket, 1024)) {
+    if (-1 == listen(my_socket, 1024)) {
         perror("Error while listen()");
         exit(EXIT_FAILURE);
     }
 }
 
+unsigned short server_port = 0;
+char server_address[LITTLE_STRING_SIZE];
+
+int create_tcp_connection_to_request(Client * client) {
+    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (-1 == server_socket) {
+        perror("Error while socket()");
+        return RESULT_INCORRECT;
+    }
+
+    fprintf(stderr, "server_address: %s\n", server_address);
+    struct hostent * host_info = gethostbyname(server_address);
+    if (NULL == host_info) {
+        perror("gethostbyname");
+        return RESULT_INCORRECT;
+    }
+    struct sockaddr_in dest_addr;
+    bzero(&dest_addr, sizeof(struct sockaddr_in));
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = server_port;
+    memcpy(&dest_addr.sin_addr, host_info->h_addr, host_info->h_length);
+
+    fprintf(stderr, "Before connect\n");
+    if (-1 == connect(server_socket, (struct sockaddr *)&dest_addr, sizeof(struct sockaddr_in))) {
+        perror("Error while connect()");
+        return RESULT_INCORRECT;
+    }
+    fprintf(stderr, "After connect\n");
+    client->server_socket = server_socket;
+
+    return RESULT_CORRECT;
+}
+
 void accept_incoming_connection() {
     struct sockaddr_in client_address;
     int address_size = sizeof(sockaddr_in);
-    int client_socket = accept(server_socket, (struct sockaddr *)&client_address,
+    int client_socket = accept(my_socket, (struct sockaddr *)&client_address,
                                (socklen_t *)&address_size);
 
     if (client_socket <= 0) {
@@ -167,24 +201,13 @@ void accept_incoming_connection() {
     }
 
     Client * new_client = new Client(client_socket, DEFAULT_BUFFER_SIZE);
-    clients.push_back(new_client);
-}
-
-int create_tcp_connection_to_request(int i) {
-    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (-1 == server_socket) {
-        perror("Error while socket()");
-        return RESULT_INCORRECT;
+    if (RESULT_CORRECT == create_tcp_connection_to_request(new_client)) {
+        clients.push_back(new_client);
     }
-
-    struct sockaddr_in dest_addr = clients[i]->dest_addr;
-    if (-1 == connect(server_socket, (struct sockaddr *)&dest_addr, sizeof(dest_addr))) {
-        perror("Error while connect()");
-        return RESULT_INCORRECT;
+    else {
+        new_client->set_closed_incorrect();
+        delete new_client;
     }
-    clients[i]->server_socket = server_socket;
-
-    return RESULT_CORRECT;
 }
 
 void delete_finished_clients() {
@@ -208,6 +231,7 @@ void receive_request_from_client(int i) {
     Buffer * client_buffer_in = clients[i]->buffer_in;
     ssize_t received = recv(clients[i]->my_socket, client_buffer_in->buf + client_buffer_in->end,
                             client_buffer_in->size - client_buffer_in->end, 0);
+    fprintf(stderr, "%ld\n", received);
     switch (received) {
         case -1:
             perror("Error while read()");
@@ -223,6 +247,7 @@ void receive_request_from_client(int i) {
             if (client_buffer_in->end == client_buffer_in->size) {
                 client_buffer_in->resize(client_buffer_in->size * 2);
             }
+
     }
 }
 
@@ -252,12 +277,12 @@ void receive_server_response(int i) {
                             (size_t)(client_buffer_out->size - client_buffer_out->end), 0);
     switch (received) {
         case -1:
-            perror("recv(http)");
+            perror("recv(from server)");
             clients[i]->is_correct_server_socket = false;
             clients[i]->set_closed_incorrect();
             break;
         case 0:
-            fprintf(stderr, "Close http connection\n");
+            fprintf(stderr, "Close connection with server\n");
             if (0 != close(clients[i]->server_socket)) {
                 perror("close");
                 clients[i]->set_closed_incorrect();
@@ -274,23 +299,23 @@ void receive_server_response(int i) {
                 }
             }
             client_buffer_out->buf[client_buffer_out->end] = '\0';
-            fprintf(stderr, "\n\nReceived from http:\n%s\n\n", client_buffer_out->buf);
+            fprintf(stderr, "\n\nReceived from server:\n%s\n\n", client_buffer_out->buf);
             out_to_file << client_buffer_out->buf << std::endl << std::endl;
     }
 }
 
 void send_request_to_server(int i) {
     if (clients[i]->buffer_in->end > clients[i]->buffer_in->start) {
-        fprintf(stderr, "\nHave data to send to http server (i):%d (fd):%d\n", i, clients[i]->server_socket);
+        fprintf(stderr, "\nHave data to send to server (i):%d (fd):%d\n", i, clients[i]->server_socket);
 
         Buffer * client_buffer_in = clients[i]->buffer_in;
         ssize_t sent = send(clients[i]->server_socket, client_buffer_in->buf,
                             (size_t)(client_buffer_in->end - client_buffer_in->start), 0);
-        fprintf(stderr, "Sent to http: %ld, %ld\n", sent, client_buffer_in->end - client_buffer_in->start);
+        fprintf(stderr, "Sent to server: %ld, %ld\n", sent, client_buffer_in->end - client_buffer_in->start);
 
         switch (sent) {
             case -1:
-                perror("Error while send(http)");
+                perror("Error while send to server");
                 clients[i]->is_correct_server_socket = false;
                 clients[i]->set_closed_incorrect();
                 break;
@@ -298,7 +323,6 @@ void send_request_to_server(int i) {
                 if (0 != close(clients[i]->server_socket)) {
                     perror("close");
                     clients[i]->set_closed_incorrect();
-                    break;
                 }
                 clients[i]->server_socket = -1;
                 break;
@@ -309,19 +333,39 @@ void send_request_to_server(int i) {
 }
 
 int main(int argc, char *argv[]) {
-    // todo GET_OPT!!!
-
-    if (2 != argc) {
-        perror("Wrong number of arguments");
-        exit(EXIT_FAILURE);
+    unsigned short my_port = 0;
+    int opt;
+    int cnt = 0;
+    while ((opt = getopt(argc, argv, "i:a:p:")) != -1) {
+        switch (opt) {
+            case 'i':
+                my_port = (unsigned short)atoi(optarg);
+                ++cnt;
+                break;
+            case 'a':
+                strncpy(server_address, optarg, strlen(optarg));
+                server_address[strlen(optarg)] = '\0';
+                ++cnt;
+                break;
+            case 'p':
+                server_port = (unsigned short)atoi(optarg);
+                ++cnt;
+                break;
+            default:
+                fprintf(stderr, "Unknown argument\n");
+                exit(EXIT_FAILURE);
+        }
     }
 
-    unsigned short server_port = (unsigned short)atoi(argv[1]);
-    if (0 == server_port) {
+    if (3 != cnt) {
+        fprintf(stderr, "Not enough arguments\n");
+        exit(EXIT_FAILURE);
+    }
+    if (0 == my_port) {
         perror("Wrong port for listening");
         exit(EXIT_FAILURE);
     }
-    init_server_socket(server_port);
+    init_server_socket(my_port);
 
     bool flag_execute = true;
     for ( ; flag_execute ; ) {
@@ -331,8 +375,8 @@ int main(int argc, char *argv[]) {
         FD_ZERO(&fds_write);
         int max_fd = 0;
 
-        FD_SET(server_socket, &fds_read);
-        max_fd = server_socket;
+        FD_SET(my_socket, &fds_read);
+        max_fd = my_socket;
 
         for (auto client : clients) {
             FD_SET(client->my_socket, &fds_read);
@@ -354,7 +398,7 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        if (FD_ISSET(server_socket, &fds_read)) {
+        if (FD_ISSET(my_socket, &fds_read)) {
             fprintf(stderr, "Have incoming client connection\n");
             accept_incoming_connection();
         }
@@ -395,7 +439,7 @@ int main(int argc, char *argv[]) {
         delete client;
     }
 
-    close(server_socket);
+    close(my_socket);
 
     return 0;
 }
