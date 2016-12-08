@@ -205,19 +205,107 @@ void delete_finished_clients() {
 }
 
 void receive_request_from_client(int i) {
-
+    Buffer * client_buffer_in = clients[i]->buffer_in;
+    ssize_t received = recv(clients[i]->my_socket, client_buffer_in->buf + client_buffer_in->end,
+                            client_buffer_in->size - client_buffer_in->end, 0);
+    switch (received) {
+        case -1:
+            perror("Error while read()");
+            clients[i]->is_correct_my_socket = false;
+            clients[i]->set_closed_incorrect();
+            break;
+        case 0:
+            fprintf(stderr, "Close client\n");
+            clients[i]->set_closed_correct();
+            break;
+        default:
+            client_buffer_in->end += received;
+            if (client_buffer_in->end == client_buffer_in->size) {
+                client_buffer_in->resize(client_buffer_in->size * 2);
+            }
+    }
 }
 
 void send_answer_to_client(int i) {
-
+    if (!clients[i]->is_closed && clients[i]->buffer_out->end > clients[i]->buffer_out->start) {
+        Buffer * client_buffer_out = clients[i]->buffer_out;
+        ssize_t sent = send(clients[i]->my_socket, client_buffer_out->buf + client_buffer_out->start,
+                            (size_t)(client_buffer_out->end - client_buffer_out->start), 0);
+        switch (sent) {
+            case -1:
+                perror("Error while send to client");
+                clients[i]->is_correct_my_socket = false;
+                clients[i]->set_closed_incorrect();
+                break;
+            case 0:
+                clients[i]->set_closed_correct();
+                break;
+            default:
+                client_buffer_out->start += sent;
+        }
+    }
 }
 
 void receive_server_response(int i) {
-
+    Buffer * client_buffer_out = clients[i]->buffer_out;
+    ssize_t received = recv(clients[i]->server_socket, client_buffer_out->buf + client_buffer_out->end,
+                            (size_t)(client_buffer_out->size - client_buffer_out->end), 0);
+    switch (received) {
+        case -1:
+            perror("recv(http)");
+            clients[i]->is_correct_server_socket = false;
+            clients[i]->set_closed_incorrect();
+            break;
+        case 0:
+            fprintf(stderr, "Close http connection\n");
+            if (0 != close(clients[i]->server_socket)) {
+                perror("close");
+                clients[i]->set_closed_incorrect();
+                break;
+            }
+            clients[i]->server_socket = -1;
+            break;
+        default:
+            client_buffer_out->end += received;
+            if (client_buffer_out->end == client_buffer_out->size) {
+                if (-1 == client_buffer_out->resize(client_buffer_out->size * 2)) {
+                    clients[i]->set_closed_incorrect();
+                    break;
+                }
+            }
+            client_buffer_out->buf[client_buffer_out->end] = '\0';
+            fprintf(stderr, "\n\nReceived from http:\n%s\n\n", client_buffer_out->buf);
+            out_to_file << client_buffer_out->buf << std::endl << std::endl;
+    }
 }
 
 void send_request_to_server(int i) {
+    if (clients[i]->buffer_in->end > clients[i]->buffer_in->start) {
+        fprintf(stderr, "\nHave data to send to http server (i):%d (fd):%d\n", i, clients[i]->server_socket);
 
+        Buffer * client_buffer_in = clients[i]->buffer_in;
+        ssize_t sent = send(clients[i]->server_socket, client_buffer_in->buf,
+                            (size_t)(client_buffer_in->end - client_buffer_in->start), 0);
+        fprintf(stderr, "Sent to http: %ld, %ld\n", sent, client_buffer_in->end - client_buffer_in->start);
+
+        switch (sent) {
+            case -1:
+                perror("Error while send(http)");
+                clients[i]->is_correct_server_socket = false;
+                clients[i]->set_closed_incorrect();
+                break;
+            case 0:
+                if (0 != close(clients[i]->server_socket)) {
+                    perror("close");
+                    clients[i]->set_closed_incorrect();
+                    break;
+                }
+                clients[i]->server_socket = -1;
+                break;
+            default:
+                client_buffer_in->start += sent;
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
