@@ -57,9 +57,9 @@ int Buffer::do_resize(size_t new_size) {
 int Buffer::do_move_end(ssize_t received) {
     end += received;
 
-    if (end == size) {
+    /*if (end == size) {
         return do_resize(size * 2);
-    }
+    }*/
 
     return RESULT_CORRECT;
 }

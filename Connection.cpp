@@ -8,74 +8,84 @@ Connection::Connection(int socket_read, int socket_write) {
     this->socket_read = socket_read;
     this->socket_write = socket_write;
 
-    flag_closed = false;
+    this->flag_closed_read_socket = false;
+    this->flag_closed_write_socket = false;
 
-    buffer = new Buffer(DEFAULT_BUFFER_SIZE);
+    buf_capacity = DEFAULT_BUFFER_SIZE;
+    buf_data_size = 0;
+
+    buf = (char*)malloc(DEFAULT_BUFFER_SIZE + 1);
+    buf[DEFAULT_BUFFER_SIZE] = '\0';
 }
 
-int Connection::get_read_socket() {
-    return socket_read;
+void Connection::close_read_socket() {
+    if (!is_closed_read_socket()) {
+        close(socket_read);
+        set_closed_read_socket();
+    }
 }
 
-int Connection::get_write_socket() {
-    return socket_write;
-}
-
-void Connection::set_close() {
-    flag_closed = true;
-}
-
-bool Connection::is_closed() {
-    return flag_closed;
-}
-
-bool Connection::is_buffer_have_data() {
-    return buffer->is_have_data();
+void Connection::close_write_socket() {
+    if (!is_closed_write_socket()) {
+        close(socket_write);
+        set_closed_write_socket();
+    }
 }
 
 int Connection::do_receive() {
-    ssize_t received = recv(socket_read, buffer->get_end(), buffer->get_empty_space_size(), 0);
+    ssize_t received = recv(socket_read, buf + buf_data_size, buf_capacity - buf_data_size, 0);
 
     if (-1 == received) {
         perror("recv");
-        set_close();
+
+        this->close_read_socket();
+        pair->set_closed_write_socket();
 
         return RESULT_INCORRECT;
     }
     else if (0 == received) {
-        fprintf(stderr, "Receive done\n");
-        set_close();
-        pair->set_close();
+        fprintf(stderr, "Receive done.\n");
+
+        this->close_read_socket();
+        pair->set_closed_write_socket();
 
         return RESULT_CORRECT;
     }
     else {
-        fprintf(stderr, "Successfully received %ld\n", received);
-        buffer->do_move_end(received);
+        buf_data_size += received;
 
         return RESULT_CORRECT;
     }
 }
 
 int Connection::do_send() {
-    ssize_t sent = send(socket_write, buffer->get_start(), buffer->get_data_size(), 0);
+    ssize_t sent = send(socket_write, buf, buf_data_size, 0);
 
     if (-1 == sent) {
         perror("sent");
-        set_close();
+
+        this->close_write_socket();
+        pair->set_closed_read_socket();
+
+        /*this->close_read_socket();
+        pair->set_closed_write_socket();*/
 
         return RESULT_INCORRECT;
     }
     else if (0 == sent) {
         fprintf(stderr, "Send done\n");
-        set_close();
-        pair->set_close();
+
+        this->close_write_socket();
+        pair->set_closed_read_socket();
+
+        /*this->close_read_socket();
+        pair->set_closed_write_socket();*/
 
         return RESULT_CORRECT;
     }
     else {
-        fprintf(stderr, "Successfully sent %ld\n", sent);
-        buffer->do_move_start(sent);
+        memmove(buf, buf + sent, buf_data_size - sent);
+        buf_data_size -= sent;
 
         return RESULT_CORRECT;
     }
@@ -88,13 +98,13 @@ void Connection::set_pair(Connection * pair) {
 Connection::~Connection() {
     fprintf(stderr, "Connection destructor\n");
 
-    delete buffer;
+    free(buf);
 
-    if (close(socket_read)) {
-        perror("close");
+    if (!flag_closed_read_socket && close(socket_read)) {
+        perror("close_read");
     }
 
-    if (close(socket_write)) {
-        perror("close");
+    if (!flag_closed_write_socket && close(socket_write)) {
+        perror("close_write");
     }
 }

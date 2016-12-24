@@ -59,10 +59,12 @@ int do_new_connect_with_server() {
     dest_addr.sin_port = htons(server_port);
     memcpy(&dest_addr.sin_addr, host_info->h_addr, host_info->h_length);
 
+    fprintf(stderr, "Before connect\n");
     if (connect(server_socket, (struct sockaddr *)&dest_addr, sizeof(dest_addr))) {
         perror("Error while connect()");
         return RESULT_INCORRECT;
     }
+    fprintf(stderr, "After connect\n");
 
     return server_socket;
 }
@@ -95,6 +97,7 @@ int do_accept_connection() {
         return RESULT_CORRECT;
     }
     else {
+        close(client_socket);
         return RESULT_INCORRECT;
     }
 }
@@ -103,7 +106,7 @@ void delete_closed_connections() {
     std::vector<Connection*> rest_connections;
 
     for (Connection * con : connections) {
-        if (con->is_closed()) {
+        if (con->can_to_delete()) {
             delete con;
         }
         else {
@@ -181,12 +184,19 @@ void start_main_loop() {
         int max_fd = my_server_socket;
 
         for (auto con : connections) {
-            FD_SET(con->get_read_socket(), &fds_read);
-            max_fd = std::max(max_fd, con->get_read_socket());
+            if (!con->is_closed_read_socket() && con->buffer_have_empty_space()) {
+                FD_SET(con->get_read_socket(), &fds_read);
+                max_fd = std::max(max_fd, con->get_read_socket());
+            }
 
-            if (con->is_buffer_have_data()) {
+            if (!con->is_closed_write_socket() && con->is_buffer_have_data()) {
                 FD_SET(con->get_write_socket(), &fds_write);
                 max_fd = std::max(max_fd, con->get_write_socket());
+            }
+
+            if (con->is_closed_read_socket() && !con->is_buffer_have_data()) {
+                con->close_write_socket();
+                con->get_pair()->set_closed_read_socket();
             }
         }
 
@@ -196,6 +206,11 @@ void start_main_loop() {
 
         if (activity <= 0) {
             perror("select");
+
+            for (auto con : connections) {
+                con->close_all();
+            }
+
             continue;
         }
 
@@ -205,11 +220,17 @@ void start_main_loop() {
         }
 
         for (auto con : connections) {
-            if (!con->is_closed() && FD_ISSET(con->get_read_socket(), &fds_read)) {
+            if (!con->is_closed_read_socket() && FD_ISSET(con->get_read_socket(), &fds_read)) {
                 con->do_receive();
             }
-            if (!con->is_closed() && FD_ISSET(con->get_write_socket(), &fds_write)) {
+
+            if (!con->is_closed_write_socket() && FD_ISSET(con->get_write_socket(), &fds_write)) {
                 con->do_send();
+            }
+
+            if (con->is_closed_read_socket() && !con->is_buffer_have_data()) {
+                con->close_write_socket();
+                con->get_pair()->set_closed_read_socket();
             }
         }
 
