@@ -4,12 +4,15 @@
 
 #include "Connection.h"
 
-Connection::Connection(int socket_read, int socket_write) {
+Connection::Connection(int socket_read, int socket_write, bool flag_connected, int server_socket_flags) {
     this->socket_read = socket_read;
     this->socket_write = socket_write;
 
     this->flag_closed_read_socket = false;
     this->flag_closed_write_socket = false;
+
+    this->flag_connected = flag_connected;
+    this->read_socket_flags = server_socket_flags;
 
     buf_capacity = DEFAULT_BUFFER_SIZE;
     buf_data_size = 0;
@@ -33,6 +36,15 @@ void Connection::close_write_socket() {
 }
 
 int Connection::do_receive() {
+    if (!flag_connected) {
+        fprintf(stderr, "Http connection established\n");
+
+        fcntl(socket_read, F_SETFL, read_socket_flags);
+        flag_connected = true;
+
+        return RESULT_CORRECT;
+    }
+
     ssize_t received = recv(socket_read, buf + buf_data_size, buf_capacity - buf_data_size, 0);
 
     if (-1 == received) {
@@ -67,8 +79,8 @@ int Connection::do_send() {
         this->close_write_socket();
         pair->set_closed_read_socket();
 
-        /*this->close_read_socket();
-        pair->set_closed_write_socket();*/
+        this->close_read_socket();
+        pair->set_closed_write_socket();
 
         return RESULT_INCORRECT;
     }
@@ -78,8 +90,8 @@ int Connection::do_send() {
         this->close_write_socket();
         pair->set_closed_read_socket();
 
-        /*this->close_read_socket();
-        pair->set_closed_write_socket();*/
+        this->close_read_socket();
+        pair->set_closed_write_socket();
 
         return RESULT_CORRECT;
     }

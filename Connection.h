@@ -14,7 +14,8 @@ class Connection {
     bool flag_closed_write_socket;
     bool flag_closed_read_socket;
 
-    //Buffer * buffer;
+    bool flag_connected;
+    int read_socket_flags;
 
     char * buf;
     size_t buf_data_size;
@@ -23,7 +24,7 @@ class Connection {
     Connection * pair;
 
 public:
-    Connection(int socket_read, int socket_write);
+    Connection(int socket_read, int socket_write, bool flag_connected, int server_socket_flags);
 
     bool is_buffer_have_data() { return buf_data_size > 0; }
 

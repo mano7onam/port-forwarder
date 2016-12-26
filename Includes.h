@@ -20,6 +20,7 @@
 #include <fstream>
 #include <signal.h>
 #include <chrono>
+#include <fcntl.h>
 
 #include "Constants.h"
 

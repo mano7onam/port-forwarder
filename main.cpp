@@ -38,19 +38,19 @@ void init_my_server_socket(unsigned short my_port) {
 unsigned short server_port = 0;
 char server_address[LITTLE_STRING_SIZE];
 
-int do_new_connect_with_server() {
-    struct hostent * host_info = gethostbyname(IP_ADDRESS);
+std::tuple<int, int, bool> do_new_connect_with_server() {
+    struct hostent * host_info = gethostbyname(server_address);
 
     if (NULL == host_info) {
         perror("gethostbyname");
-        return RESULT_INCORRECT;
+        return std::make_tuple(RESULT_INCORRECT, RESULT_INCORRECT, false);
     }
 
     int server_socket = socket(PF_INET, SOCK_STREAM, 0);
 
     if (-1 == server_socket) {
         perror("Error while socket()");
-        return RESULT_INCORRECT;
+        return std::make_tuple(RESULT_INCORRECT, RESULT_INCORRECT, false);
     }
 
     struct sockaddr_in dest_addr;
@@ -59,14 +59,21 @@ int do_new_connect_with_server() {
     dest_addr.sin_port = htons(server_port);
     memcpy(&dest_addr.sin_addr, host_info->h_addr, host_info->h_length);
 
-    fprintf(stderr, "Before connect\n");
-    if (connect(server_socket, (struct sockaddr *)&dest_addr, sizeof(dest_addr))) {
-        perror("Error while connect()");
-        return RESULT_INCORRECT;
-    }
-    fprintf(stderr, "After connect\n");
+    int server_socket_flags = fcntl(server_socket, F_GETFL, 0);
+    fcntl(server_socket, F_SETFL, server_socket_flags | O_NONBLOCK);
 
-    return server_socket;
+    if (connect(server_socket, (struct sockaddr *)&dest_addr, sizeof(dest_addr))) {
+        if (errno == EINPROGRESS) {
+            fprintf(stderr, "Connect in progress\n");
+            return std::make_tuple(server_socket, server_socket_flags, false);
+        }
+        else {
+            perror("connect");
+            return std::make_tuple(RESULT_INCORRECT, RESULT_INCORRECT, false);
+        }
+    }
+
+    return std::make_tuple(server_socket, server_socket_flags, true);
 }
 
 std::vector<Connection*> connections;
@@ -82,11 +89,14 @@ int do_accept_connection() {
         return RESULT_INCORRECT;
     }
 
-    int server_socket = do_new_connect_with_server();
+    auto result = do_new_connect_with_server();
+    int server_socket = std::get<0>(result);
+    int server_socket_flags = std::get<1>(result);
+    bool flag_connected = std::get<2>(result);
 
     if (RESULT_INCORRECT != server_socket) {
-        Connection * connection1 = new Connection(client_socket, server_socket);
-        Connection * connection2 = new Connection(server_socket, client_socket);
+        Connection * connection1 = new Connection(client_socket, server_socket, true, server_socket_flags);
+        Connection * connection2 = new Connection(server_socket, client_socket, flag_connected, server_socket_flags);
 
         connection1->set_pair(connection2);
         connection2->set_pair(connection1);
